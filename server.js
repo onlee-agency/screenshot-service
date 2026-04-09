@@ -113,7 +113,7 @@ async function takeScreenshot(params) {
       }, { sx: scrollX, sy: scrollY, vh: viewportHeight })
 
       // Wait for animations to complete
-      await page.waitForTimeout(3000)
+      await page.waitForTimeout(1500)
     } else {
       await page.waitForTimeout(1000)
     }
