@@ -89,17 +89,27 @@ async function takeScreenshot(params) {
       throw new Error('Either url or html is required')
     }
 
-    // Wait for fonts and animations
+    // Wait for fonts to load
     await page.evaluate(() => document.fonts.ready).catch(() => {})
-    await page.waitForTimeout(1000)
+    await page.waitForTimeout(800)
 
-    // Scroll to position
+    // Scroll to position — use instant behavior to bypass Lenis/smooth scroll
     if (scrollX || scrollY) {
-      await page.evaluate(({ sx, sy }) => window.scrollTo(sx, sy), { sx: scrollX, sy: scrollY })
+      await page.evaluate(({ sx, sy }) => {
+        // Disable smooth scroll libraries (Lenis, locomotive-scroll, etc.)
+        document.documentElement.style.scrollBehavior = 'auto'
+        document.body.style.scrollBehavior = 'auto'
+        // Force instant scroll
+        window.scrollTo({ top: sy, left: sx, behavior: 'instant' })
+      }, { sx: scrollX, sy: scrollY })
+
+      // Wait for scroll-triggered animations/lazy-loading to settle
+      await page.waitForTimeout(2000)
+    } else {
       await page.waitForTimeout(500)
     }
 
-    // Capture the visible viewport (no clip — captures what's on screen after scroll)
+    // Capture the visible viewport after scroll
     const buffer = await page.screenshot({ type: 'png' })
 
     await context.close()
