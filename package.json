@@ -1,0 +1,13 @@
+{
+  "name": "onlee-screenshot-service",
+  "version": "1.0.0",
+  "description": "Screenshot service using Playwright with multi-browser support (Chromium, WebKit, Firefox)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "install-browsers": "npx playwright install chromium webkit firefox"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
