@@ -7,39 +7,32 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN || '*'
 /**
  * Onlee Screenshot Service
  *
- * Uses Playwright with 3 browser engines (Chromium, WebKit, Firefox)
- * to capture screenshots matching the client's actual browser rendering.
- *
- * Supports two modes:
- * 1. URL mode: navigates to a URL and captures
- * 2. DOM snapshot mode: renders provided HTML (BugHerd approach — most accurate)
+ * Page caching approach:
+ * - First feedback on a URL: loads page, scrolls to bottom (triggers ALL animations),
+ *   then scrolls to target and captures
+ * - Subsequent feedback on same URL: reuses the already-loaded page (instant scroll + capture)
+ * - Pages expire after 5 minutes of inactivity
  */
 
-// Pre-launch browsers for faster screenshots (reuse across requests)
+// Pre-launched browsers (reused across requests)
 let browsers = {}
+
+// Page cache: { [cacheKey]: { page, context, lastUsed, url } }
+let pageCache = {}
+const PAGE_TTL = 5 * 60 * 1000 // 5 minutes
 
 async function getBrowser(engine) {
   if (browsers[engine]) return browsers[engine]
-
   const opts = { headless: true }
-
   switch (engine) {
-    case 'webkit':
-      browsers[engine] = await webkit.launch(opts)
-      break
-    case 'firefox':
-      browsers[engine] = await firefox.launch(opts)
-      break
-    default:
-      browsers[engine] = await chromium.launch(opts)
-      break
+    case 'webkit': browsers[engine] = await webkit.launch(opts); break
+    case 'firefox': browsers[engine] = await firefox.launch(opts); break
+    default: browsers[engine] = await chromium.launch(opts); break
   }
-
   console.log(`[Browser] ${engine} launched`)
   return browsers[engine]
 }
 
-// Detect which engine to use based on user agent
 function detectEngine(userAgent) {
   if (!userAgent) return 'chromium'
   const ua = userAgent.toLowerCase()
@@ -48,22 +41,35 @@ function detectEngine(userAgent) {
   return 'chromium'
 }
 
-async function takeScreenshot(params) {
+// Build cache key from URL + viewport + engine
+function cacheKey(url, vw, vh, engine) {
+  return `${engine}:${vw}x${vh}:${url}`
+}
+
+// Get or create a fully-loaded page (all animations triggered)
+async function getPage(params) {
   const {
     url,
-    html,
-    baseUrl,
     userAgent,
     viewportWidth = 1440,
     viewportHeight = 900,
-    scrollX = 0,
-    scrollY = 0,
     devicePixelRatio = 2
   } = params
 
   const engine = detectEngine(userAgent)
-  const browser = await getBrowser(engine)
+  const key = cacheKey(url, viewportWidth, viewportHeight, engine)
 
+  // Check cache — reuse if same page is still open
+  if (pageCache[key]) {
+    const cached = pageCache[key]
+    cached.lastUsed = Date.now()
+    console.log(`[Cache] HIT — reusing page for ${url} (${engine})`)
+    return { page: cached.page, engine, fromCache: true }
+  }
+
+  // Cache miss — create new page, load URL, scroll to bottom to trigger all animations
+  console.log(`[Cache] MISS — loading page for ${url} (${engine})`)
+  const browser = await getBrowser(engine)
   const context = await browser.newContext({
     viewport: { width: viewportWidth, height: viewportHeight },
     deviceScaleFactor: Math.min(devicePixelRatio, 2),
@@ -71,80 +77,80 @@ async function takeScreenshot(params) {
   })
 
   const page = await context.newPage()
+  await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 })
 
-  try {
-    if (html) {
-      // DOM Snapshot mode — render the exact HTML the user sees
-      // This is the BugHerd approach: most accurate, handles animations/state
-      await page.setContent(html, { waitUntil: 'networkidle' })
+  // Wait for fonts
+  await page.evaluate(() => document.fonts.ready).catch(() => {})
+  await page.waitForTimeout(500)
 
-      // If baseUrl provided, fix relative resource URLs
-      if (baseUrl) {
-        await page.addStyleTag({ content: `/* base override */ @import url("${baseUrl}");` }).catch(() => {})
-      }
-    } else if (url) {
-      // URL mode — navigate and capture
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 })
-    } else {
-      throw new Error('Either url or html is required')
+  // Scroll ALL the way to the bottom to trigger every animation on the page
+  await page.evaluate(() => {
+    document.documentElement.style.scrollBehavior = 'auto'
+    document.body.style.scrollBehavior = 'auto'
+    var step = Math.floor(window.innerHeight / 2)
+    var maxScroll = document.documentElement.scrollHeight
+    for (var y = 0; y <= maxScroll; y += step) {
+      window.scrollTo({ top: y, left: 0, behavior: 'instant' })
     }
+    // Hit the absolute bottom
+    window.scrollTo({ top: maxScroll, left: 0, behavior: 'instant' })
+  })
 
-    // Wait for fonts to load
-    await page.evaluate(() => document.fonts.ready).catch(() => {})
-    await page.waitForTimeout(800)
+  // Wait for all animations to complete
+  await page.waitForTimeout(1500)
 
-    // Scroll to position — scroll incrementally to trigger IntersectionObserver animations
-    if (scrollX || scrollY) {
-      await page.evaluate(({ sx, sy, vh }) => {
-        document.documentElement.style.scrollBehavior = 'auto'
-        document.body.style.scrollBehavior = 'auto'
+  // Store in cache
+  pageCache[key] = { page, context, lastUsed: Date.now(), url }
+  console.log(`[Cache] Stored page for ${url} (${engine})`)
 
-        // Scroll incrementally to trigger animations along the way
-        var step = Math.max(200, Math.floor(vh / 2))
-        for (var y = 0; y <= sy; y += step) {
-          window.scrollTo({ top: y, left: sx, behavior: 'instant' })
-        }
+  return { page, engine, fromCache: false }
+}
 
-        // Scroll PAST the target (one viewport beyond) to trigger elements below viewport
-        window.scrollTo({ top: sy + vh, left: sx, behavior: 'instant' })
+async function takeScreenshot(params) {
+  const { url, scrollX = 0, scrollY = 0, viewportWidth = 1440, viewportHeight = 900 } = params
 
-        // Scroll back to exact target position
-        window.scrollTo({ top: sy, left: sx, behavior: 'instant' })
-      }, { sx: scrollX, sy: scrollY, vh: viewportHeight })
+  if (!url) throw new Error('URL is required')
 
-      // Wait for animations to complete
-      await page.waitForTimeout(1500)
-    } else {
-      await page.waitForTimeout(1000)
-    }
+  const { page, engine, fromCache } = await getPage(params)
 
-    // Capture the visible viewport after scroll
-    const buffer = await page.screenshot({ type: 'png' })
+  // Scroll to the target position (page already has all animations loaded)
+  await page.evaluate(({ sx, sy }) => {
+    window.scrollTo({ top: sy, left: sx, behavior: 'instant' })
+  }, { sx: scrollX, sy: scrollY })
 
-    await context.close()
+  // Brief wait — if from cache, elements are already loaded (fast)
+  // If fresh page, animations already completed during full-page scroll
+  await page.waitForTimeout(fromCache ? 300 : 500)
 
-    return {
-      screenshot: `data:image/png;base64,${buffer.toString('base64')}`,
-      engine,
-    }
-  } catch (error) {
-    await context.close()
-    throw error
+  // Capture the visible viewport
+  const buffer = await page.screenshot({ type: 'png' })
+
+  return {
+    screenshot: `data:image/png;base64,${buffer.toString('base64')}`,
+    engine,
+    cached: fromCache,
   }
 }
 
+// Clean up expired pages every 60 seconds
+setInterval(() => {
+  const now = Date.now()
+  for (const key in pageCache) {
+    if (now - pageCache[key].lastUsed > PAGE_TTL) {
+      console.log(`[Cache] Expiring page: ${key}`)
+      pageCache[key].context.close().catch(() => {})
+      delete pageCache[key]
+    }
+  }
+}, 60000)
+
 // HTTP Server
 const server = http.createServer(async (req, res) => {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN)
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204)
-    res.end()
-    return
-  }
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
   if (req.method === 'POST' && req.url === '/screenshot') {
     let body = ''
@@ -164,25 +170,22 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
-  // Health check
   if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
+    const cachedPages = Object.keys(pageCache).length
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
       status: 'ok',
       engines: ['chromium', 'webkit', 'firefox'],
+      cachedPages,
       uptime: process.uptime(),
     }))
     return
   }
 
-  res.writeHead(404)
-  res.end('Not found')
+  res.writeHead(404); res.end('Not found')
 })
 
-// Pre-warm Chromium on startup
-getBrowser('chromium').then(() => {
-  console.log('[Ready] Chromium pre-warmed')
-})
+getBrowser('chromium').then(() => console.log('[Ready] Chromium pre-warmed'))
 
 server.listen(PORT, () => {
   console.log(`[Server] Screenshot service running on port ${PORT}`)
