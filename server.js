@@ -95,23 +95,25 @@ async function takeScreenshot(params) {
 
     // Scroll to position — scroll incrementally to trigger IntersectionObserver animations
     if (scrollX || scrollY) {
-      await page.evaluate(({ sx, sy }) => {
-        // Disable smooth scroll libraries
+      await page.evaluate(({ sx, sy, vh }) => {
         document.documentElement.style.scrollBehavior = 'auto'
         document.body.style.scrollBehavior = 'auto'
 
-        // Scroll incrementally to trigger all scroll-based animations along the way
-        // (Webflow/AOS/GSAP use IntersectionObserver which only fires when elements enter viewport)
-        var step = Math.max(200, Math.floor(window.innerHeight / 2))
+        // Scroll incrementally to trigger animations along the way
+        var step = Math.max(200, Math.floor(vh / 2))
         for (var y = 0; y <= sy; y += step) {
           window.scrollTo({ top: y, left: sx, behavior: 'instant' })
         }
-        // Final scroll to exact position
-        window.scrollTo({ top: sy, left: sx, behavior: 'instant' })
-      }, { sx: scrollX, sy: scrollY })
 
-      // Wait for all triggered animations to complete
-      await page.waitForTimeout(3500)
+        // Scroll PAST the target (one viewport beyond) to trigger elements below viewport
+        window.scrollTo({ top: sy + vh, left: sx, behavior: 'instant' })
+
+        // Scroll back to exact target position
+        window.scrollTo({ top: sy, left: sx, behavior: 'instant' })
+      }, { sx: scrollX, sy: scrollY, vh: viewportHeight })
+
+      // Wait for animations to complete
+      await page.waitForTimeout(3000)
     } else {
       await page.waitForTimeout(1000)
     }
