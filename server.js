@@ -99,11 +99,8 @@ async function takeScreenshot(params) {
       await page.waitForTimeout(500)
     }
 
-    // Capture viewport screenshot
-    const buffer = await page.screenshot({
-      type: 'png',
-      clip: { x: 0, y: 0, width: viewportWidth, height: viewportHeight },
-    })
+    // Capture the visible viewport (no clip — captures what's on screen after scroll)
+    const buffer = await page.screenshot({ type: 'png' })
 
     await context.close()
 
