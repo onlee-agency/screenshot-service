@@ -93,20 +93,27 @@ async function takeScreenshot(params) {
     await page.evaluate(() => document.fonts.ready).catch(() => {})
     await page.waitForTimeout(800)
 
-    // Scroll to position — use instant behavior to bypass Lenis/smooth scroll
+    // Scroll to position — scroll incrementally to trigger IntersectionObserver animations
     if (scrollX || scrollY) {
       await page.evaluate(({ sx, sy }) => {
-        // Disable smooth scroll libraries (Lenis, locomotive-scroll, etc.)
+        // Disable smooth scroll libraries
         document.documentElement.style.scrollBehavior = 'auto'
         document.body.style.scrollBehavior = 'auto'
-        // Force instant scroll
+
+        // Scroll incrementally to trigger all scroll-based animations along the way
+        // (Webflow/AOS/GSAP use IntersectionObserver which only fires when elements enter viewport)
+        var step = Math.max(200, Math.floor(window.innerHeight / 2))
+        for (var y = 0; y <= sy; y += step) {
+          window.scrollTo({ top: y, left: sx, behavior: 'instant' })
+        }
+        // Final scroll to exact position
         window.scrollTo({ top: sy, left: sx, behavior: 'instant' })
       }, { sx: scrollX, sy: scrollY })
 
-      // Wait for scroll-triggered animations/lazy-loading to settle
-      await page.waitForTimeout(2000)
+      // Wait for all triggered animations to complete
+      await page.waitForTimeout(3500)
     } else {
-      await page.waitForTimeout(500)
+      await page.waitForTimeout(1000)
     }
 
     // Capture the visible viewport after scroll
